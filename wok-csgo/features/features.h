@@ -4,7 +4,7 @@
 
 #include "ragebot/animations.h"
 
-#include "ragebot/lagcompensation.h"
+//#include "ragebot/lagcompensation.h"
 
 #include "ragebot/prediction.h"
 
