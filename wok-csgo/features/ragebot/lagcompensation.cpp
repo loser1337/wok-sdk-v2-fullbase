@@ -1,179 +1,121 @@
-#include "../features.h"
+#include "lagcompensation.h"
 
-void C_LagCompensation::frame_net_update_end() const
+std::deque<CLagRecord> pLagRecords;
+
+float_t CLagCompensation::lerp_time()
 {
-	if (globals::m_local == nullptr || !globals::m_local->is_alive() || globals::m_local->get_weapons() == nullptr || round_flags == ROUND_STARTING)
-	{
-		reset();
-		return;
-	}
+	int32_t iUpdateRate = interfaces::m_cvar_system->find_var(FNV1A("cl_updaterate"))->get_int();
+	c_cvar* minupdate = interfaces::m_cvar_system->find_var(FNV1A("sv_minupdaterate"));
+	c_cvar* maxupdate = interfaces::m_cvar_system->find_var(FNV1A("sv_maxupdaterate"));
 
-	for (auto index = 1; index < interfaces::m_global_vars->m_max_clients; index++)
-	{
-		const auto entity = reinterpret_cast<c_base_entity*>(interfaces::m_entity_list->get_client_entity(index));
-		
-		const auto player = reinterpret_cast<c_cs_player*>(entity);
+	if (minupdate && maxupdate)
+		iUpdateRate = maxupdate->get_int();
+	float_t flratio = interfaces::m_cvar_system->find_var(FNV1A("cl_interp_ratio"))->get_float();
 
-		if (!should_lag_compensate(entity))
-		{
-			G::player_lag_records[index - 1].records->clear();
+	if (flratio == 0)
+		flratio == 1.0f;
+	float_t flLerp = interfaces::m_cvar_system->find_var(FNV1A("cl_interp"))->get_float();
+	c_cvar* cmin = interfaces::m_cvar_system->find_var(FNV1A("sv_client_min_interp_ratio"));
+	c_cvar* cmax = interfaces::m_cvar_system->find_var(FNV1A("sv_client_max_interp_ratio"));
+
+	if (cmin && cmax && cmin->get_float() != 1)
+		flratio = std::clamp(flratio, cmin->get_float(), cmax->get_float());
+
+	return std::max(flLerp, (flratio / iUpdateRate));
+}
+
+bool CLagCompensation::valid_tick(int iTick)
+{
+	auto nci = interfaces::m_engine->get_net_channel_info();
+	if (!nci)
+		return false;
+	auto iPredictedCmdArrivalTick = interfaces::m_global_vars->m_tick_count + 1 + TIME_TO_TICKS(nci->get_avg_latency(FLOW_INCOMING) + nci->get_avg_latency(FLOW_OUTGOING));
+	auto iCorrect = std::clamp(lerp_time() + nci->get_latency(FLOW_OUTGOING), 0.f, 1.f) - TIME_TO_TICKS(iPredictedCmdArrivalTick + TIME_TO_TICKS(lerp_time()) - (iTick + TIME_TO_TICKS(lerp_time())));
+
+	return(abs(iCorrect) <= 0.2f);
+}
+
+void CLagCompensation::Run(c_user_cmd* pCmd)
+{
+	for (int32_t pPlayerID = 1; pPlayerID < interfaces::m_global_vars->m_max_clients; pPlayerID++)
+	{
+		c_cs_player* pPlayer = (c_cs_player*)(interfaces::m_entity_list->get_client_entity(pPlayerID));
+
+		if (pPlayer == globals::local)
 			continue;
-		}
-
-		fix_animation_data(entity);
-		set_interpolation_flags(entity, DISABLE_INTERPOLATION);
-		update_player_record_data(entity);
-
-		entity->client_side_animation() = true;
 	}
 }
 
-bool C_LagCompensation::should_lag_compensate(c_base_entity* entity)
+void CLagCompensation::UpdateIncomingSequences(i_net_channel* pNetChannel)
 {
-	if (globals::m_local == nullptr || G::settings.rage_positionadjustment == 0)
-		return false;
-
-	if (!G::hooks.createmove.ragebot->can_aimbot_player(entity))
-		return false;
-
-	return true;
-}
-
-void C_LagCompensation::set_interpolation_flags(c_base_entity* entity, int flag)
-{
-	auto var_map = reinterpret_cast<uintptr_t>(entity) + 36; // tf2 = 20
-	auto var_map_list_count = *reinterpret_cast<int*>(var_map + 20);
-
-	for (auto index = 0; index < var_map_list_count; index++)
-		*reinterpret_cast<uintptr_t*>(*reinterpret_cast<uintptr_t*>(var_map) + index * 12) = flag;
-}
-
-float C_LagCompensation::get_interpolation()
-{
-	static auto cl_interp = interfaces::m_cvar_system->find_var(FNV1A("cl_interp"));
-	static auto cl_interp_ratio = interfaces::m_cvar_system->find_var(FNV1A("cl_interp_ratio"));
-	static auto sv_client_min_interp_ratio = interfaces::m_cvar_system->find_var(FNV1A("sv_client_min_interp_ratio"));
-	static auto sv_client_max_interp_ratio = interfaces::m_cvar_system->find_var(FNV1A("sv_client_max_interp_ratio"));
-	static auto cl_updaterate = interfaces::m_cvar_system->find_var(FNV1A("cl_updaterate"));
-	static auto sv_minupdaterate = interfaces::m_cvar_system->find_var(FNV1A("sv_minupdaterate"));
-	static auto sv_maxupdaterate = interfaces::m_cvar_system->find_var(FNV1A("sv_maxupdaterate"));
-
-	auto updaterate = std::clamp(cl_updaterate->get_float(), sv_minupdaterate->get_float(), sv_maxupdaterate->get_float());
-	auto lerp_ratio = std::clamp(cl_interp_ratio->get_float(), sv_client_min_interp_ratio->get_float(), sv_client_max_interp_ratio->get_float());
-	return std::clamp(lerp_ratio / updaterate, cl_interp->get_float(), 1.0f);
-}
-
-bool C_LagCompensation::is_time_delta_too_large(C_Tick_Record wish_record) const
-{
-	// @note: бульдозер переделай interfaces::engine->get_avg_latency(0)
-	auto predicted_arrival_tick = TIME_TO_TICKS(interfaces::engine->get_avg_latency(0) + G::interfaces.engine->get_avg_latency(1)) + (G::original_cmd.tick_count + G::interfaces.clientstate->client_state->choked_commands + 1);
-
-	auto lerp_time = get_interpolation();
-	auto correct = std::clamp(G::interfaces.engine->get_latency(0) + lerp_time, 0.f, 1.f);
-	auto lag_delta = correct - TICKS_TO_TIME(predicted_arrival_tick + TIME_TO_TICKS(lerp_time - wish_record.simulation_time + lerp_time));
-
-	return abs(lag_delta) > static_cast<float>(G::settings.rage_positionadjustment_max_history) / 1000.f;
-}
-
-void C_LagCompensation::store_record_data(c_base_entity* entity, C_Tick_Record* record_data)
-{
-	if (entity == nullptr)
+	if (pNetChannel == nullptr)
 		return;
 
-	record_data->origin = entity->get_origin();
-	record_data->abs_origin = entity->get_abs_origin();
-	record_data->velocity = entity->get_abs_velocity();
-	// @note: нужно адднуть то чего нету (get_obbmins, get_obbmaxs, get_eye_angles, get_abs_eye_angles,
-	//  get_sequence, get_entity_flags, get_simulation_time, get_lower_body_yaw, get_cycle, get_pose_paramaters, get_ragdoll_pos)
-	//  и убрать коммент
+	if (nLastIncomingSequence == 0)
+		nLastIncomingSequence = pNetChannel->m_in_sequence_number;
 
-	// @note: спиздить можно из гучи https://github.com/notphage/gucci
+	if (pNetChannel->m_in_sequence_number > nLastIncomingSequence)
+	{
+		nLastIncomingSequence = pNetChannel->m_in_sequence_number;
+		vecSequences.emplace_front(SequenceObject_t(pNetChannel->m_in_reliable_state, pNetChannel->m_out_reliable_state, pNetChannel->m_in_sequence_number, interfaces::m_global_vars->m_real_time));
+	}
 
-	//    record_data->object_mins = entity->get_obbmins();
-	//    record_data->object_maxs = entity->get_obbmaxs();
-	//    record_data->eye_angles = entity->get_eye_angles();
-	//    record_data->abs_eye_angles = entity->get_abs_eye_angles();
-	//    record_data->sequence = entity->get_sequence();
-	//    record_data->entity_flags = entity->get_entity_flags();
-	//    record_data->simulation_time = entity->get_simulation_time();
-	//    record_data->lower_body_yaw = entity->get_lower_body_yaw();
-	//    record_data->cycle = entity->get_cycle();
-	//    record_data->pose_paramaters = entity->get_pose_paramaters();
-	//    record_data->rag_positions = entity->get_ragdoll_pos();
-
-	record_data->data_filled = true;
+	if (vecSequences.size() > 2048U)
+		vecSequences.pop_back();
 }
 
-// @note: чекни коммент у store_record_data
-void C_LagCompensation::apply_record_data(c_base_entity* entity, C_Tick_Record* record_data)
-{
-	if (entity == nullptr || !record_data->data_filled)
-		return;
+// @note: solvet or maximbulldozer add store_record and apply_store_record.
 
-	entity->get_origin() = record_data->origin;
-	entity->get_velocity() = record_data->velocity;
-	entity->get_obbmins() = record_data->object_mins;
-	entity->get_obbmaxs() = record_data->object_maxs;
-	entity->get_eye_angles() = record_data->eye_angles;
-	entity->get_abs_eye_angles() = record_data->abs_eye_angles;
-	entity->get_sequence() = record_data->sequence;
-	entity->get_entity_flags() = record_data->entity_flags;
-	entity->get_simulation_time() = record_data->simulation_time;
-	entity->get_lower_body_yaw() = record_data->lower_body_yaw;
-	entity->get_cycle() = record_data->cycle;
-	entity->get_pose_paramaters() = record_data->pose_paramaters;
-	entity->get_ragdoll_pos() = record_data->rag_positions;
-	entity->set_abs_angles(record_data->abs_eye_angles);
-	entity->set_abs_origin(record_data->abs_origin);
+void CLagCompensation::ClearIncomingSequences()
+{
+	if (!vecSequences.empty())
+	{
+		nLastIncomingSequence = 0;
+		vecSequences.clear();
+	}
 }
 
-void C_LagCompensation::simulate_movement(C_Simulation_Data* data)
+void CLagCompensation::AddLatencyToNetChannel(i_net_channel* pNetChannel, float flLatency)
 {
-	c_game_trace trace;
-	c_trace_filter filter(globals::m_local, TRACE_EVERYTHING);
-
-	auto sv_gravity = interfaces::m_cvar_system->find_var(FNV1A("sv_gravity"))->get_int();
-	auto sv_jump_impulse = interfaces::m_cvar_system->find_var(FNV1A("sv_jump_impulse"))->get_float();
-	auto gravity_per_tick = sv_gravity * interfaces::m_global_vars->m_interval_per_tick;
-	auto predicted_origin = data->origin;
-
-	if (data->on_ground)
-		data->velocity.z -= gravity_per_tick;
-
-	predicted_origin += data->velocity * interfaces::m_global_vars->m_interval_per_tick;
-
-	interfaces::m_trace_system->trace_ray(ray_t(data->origin, predicted_origin, data->entity->get_obbmins(), data->entity->get_obbmaxs()), CONTENTS_SOLID, &filter, &trace);
-
-	if (trace.m_fraction == 1.f)
-		data->origin = predicted_origin;
-
-	interfaces::m_trace_system->trace_ray(ray_t(data->origin, data->origin - vec3_t(0.f, 0.f, 2.f), data->entity->get_obbmins(), data->entity->get_obbmaxs()), CONTENTS_SOLID, &filter, &trace);
-
-	data->on_ground = trace.m_fraction == 0.f;
+	for (const auto& sequence : vecSequences)
+	{
+		if (interfaces::m_global_vars->m_real_time - sequence.flCurrentTime >= flLatency)
+		{
+			pNetChannel->m_in_reliable_state = sequence.iInReliableState;
+			pNetChannel->m_in_sequence_number = sequence.iSequenceNr;
+			break;
+		}
+	}
 }
 
-int C_LagCompensation::start_lag_compensation(c_base_entity* entity, int wish_tick, C_Tick_Record* output_record) const
+void UpdateAnimation(c_cs_player* pEntity)
 {
-	if (!should_lag_compensate(entity))
-		return -1;
+	anim_layers_t* pAnimLayers; 
+	float flPoseParameters[24];
+	float_t flBackupCurtime = interfaces::m_global_vars->m_cur_time;
+	int32_t iBackupFrameCount = interfaces::m_global_vars->m_frame_count;
+	float_t flBackupFrameTime = interfaces::m_global_vars->m_frame_time;
 
-	auto player_index = entity->get_index() - 1;
-	auto player_record = G::player_lag_records[player_index];
+	interfaces::m_global_vars->m_cur_time = pEntity->get_sim_time();
+	interfaces::m_global_vars->m_frame_time = interfaces::m_global_vars->m_interval_per_tick;
 
-	if (player_record.records->empty() || wish_tick + 1 > player_record.records->size() - 1)
-		return -1;
+	pEntity->get_eflags() = pEntity->get_eflags() & 0x1000;
 
-	auto current_record = player_record.records->at(wish_tick);
-	auto next_record = player_record.records->at(wish_tick + 1);
+	pEntity->update_client_side_animation();
+	pEntity->get_client_side_animation() = true;
+	pEntity->update_client_side_animation();
+	pEntity->get_client_side_animation() = false;
 
-	if (!current_record.data_filled || !next_record.data_filled || wish_tick > 0 && is_time_delta_too_large(current_record))
-		return -1;
+	// * @note: commented code need fix (btw ia ne spal yzhe dnya 3)
+	// *
+	// *
 
-	if (wish_tick == 0 && (current_record.origin - next_record.origin).length_sqr() > 4096.f)
-		predict_player(entity, &current_record, &next_record);
+	//std::memcpy(pAnimLayers, &pEntity->get_anim_layers(), sizeof(anim_layers_t) * 13);
+    std::memcpy(flPoseParameters, pEntity->get_pose_params().data(), 24);
 
-	if (output_record != nullptr && current_record.data_filled)
-		*output_record = current_record;
+	interfaces::m_global_vars->m_cur_time = flBackupCurtime;
+	interfaces::m_global_vars->m_frame_time = flBackupFrameTime;
 
-	return TIME_TO_TICKS(current_record.simulation_time + get_interpolation());
+	//std::memcpy(&pEntity->get_anim_layers(), pAnimLayers, sizeof(anim_layers_t) * 13);
+	std::memcpy(pEntity->get_pose_params().data(), flPoseParameters, 24);
 }

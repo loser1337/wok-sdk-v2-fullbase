@@ -1,173 +1,89 @@
-#pragma once
+#include "../../globals.h"
 
-#define LAG_COMPENSATION_TICKS 32
-#define DISABLE_INTERPOLATION 0
-#define ENABLE_INTERPOLATION 1
+#pragma region lagcompensation_definitions
+#define LAG_COMPENSATION_TELEPORTED_DISTANCE_SQR ( 64.0f * 64.0f )
+#define LAG_COMPENSATION_EPS_SQR ( 0.1f * 0.1f )
+#define LAG_COMPENSATION_ERROR_EPS_SQR ( 4.0f * 4.0f )
+#pragma endregion
 
-#define TIME_TO_TICKS( dt ) ( (int)( 0.5f + (float)(dt) / interfaces::m_global_vars->m_interval_per_tick ) )
-#define TICKS_TO_TIME( t )  ( interfaces::m_global_vars->m_interval_per_tick * ( t ) )
-#define ROUND_TO_TICKS( t ) ( interfaces::m_global_vars->m_interval_per_tick * TIME_TO_TICKS( t ) )
-
-class C_Tick_Record
+#pragma region lagcompensation_enumerations
+enum ELagCompensationState
 {
-public:
-	explicit C_Tick_Record() : sequence(0), entity_flags(0), simulation_time(0), lower_body_yaw(0), cycle(0)
-	{
-	}
+	LC_NO = 0,
+	LC_ALIVE = (1 << 0),
+	LC_ORIGIN_CHANGED = (1 << 8),
+	LC_ANGLES_CHANGED = (1 << 9),
+	LC_SIZE_CHANGED = (1 << 10),
+	LC_ANIMATION_CHANGED = (1 << 11)
+};
+#pragma endregion
 
-	~C_Tick_Record()
-	{
-	}
+struct SequenceObject_t
+{
+	SequenceObject_t(int iInReliableState, int iOutReliableState, int iSequenceNr, float flCurrentTime)
+		: iInReliableState(iInReliableState), iOutReliableState(iOutReliableState), iSequenceNr(iSequenceNr), flCurrentTime(flCurrentTime) { }
 
-	void reset()
-	{
-		if (data_filled)
-			return;
-
-		origin.clear();
-		velocity.clear();
-		object_mins.clear();
-		object_maxs.clear();
-		hitbox_positon.clear();
-
-		eye_angles.clear();
-		abs_eye_angles.clear();
-
-		sequence = 0;
-		entity_flags = 0;
-
-		simulation_time = 0.f;
-		lower_body_yaw = 0.f;
-		cycle = 0.f;
-
-		//fill(begin(pose_paramaters), end(pose_paramaters), 0.f);
-		//fill(begin(rag_positions), end(rag_positions), 0.f);
-
-		data_filled = false;
-	}
-
-	vec3_t origin;
-	vec3_t abs_origin;
-	vec3_t velocity;
-	vec3_t object_mins;
-	vec3_t object_maxs;
-	vec3_t hitbox_positon;
-
-	qangle_t eye_angles;
-	qangle_t abs_eye_angles;
-
-	int sequence;
-	int entity_flags;
-
-	float simulation_time;
-	float lower_body_yaw;
-	float cycle;
-
-	std::array<float, 24> pose_paramaters;
-	std::array<float, 24> rag_positions;
-
-	bool data_filled = false;
+	int iInReliableState;
+	int iOutReliableState;
+	int iSequenceNr;
+	float flCurrentTime;
 };
 
-class C_Simulation_Data
+class CLagRecord
 {
-public:
-	C_Simulation_Data() : entity(nullptr), on_ground(false)
+	vec3_t vecOrigin, vecVelocity, vecMins, vecMaxs;
+	qangle_t angAngles, angAbsAngels;
+	int32_t iFlags, iEFlags, iSimulationTime, iPlayerID;
+	float_t flLby, flDuckAmount;
+	bool bIsDormant, bIsShooting, bIsImmune, bIsValid;
+
+
+	c_anim_state* pAnimstate;
+	anim_layers_t  pLeftLayers, pRightLayers, pCenterLayers;
+	std::array<float_t, 24> flPoseParameters;
+	c_cs_player* pPlayer;
+
+
+	CLagRecord(c_cs_player* pPlayer)
 	{
-	}
-
-	~C_Simulation_Data()
-	{
-	}
-
-	c_base_entity* entity;
-
-	vec3_t origin;
-	vec3_t velocity;
-
-	bool on_ground;
-
-	bool data_filled = false;
-};
-
-class C_Player_Record
-{
-public:
-	C_Player_Record() : entity(nullptr), tick_count(0), being_lag_compensated(false), lower_body_yaw(0), last_lower_body_yaw_last_update(0)
-	{
-	}
-
-	~C_Player_Record()
-	{
-	}
-
-	void reset()
-	{
-		entity = nullptr;
-		tick_count = -1;
-		hitbox_position.clear();
-		eye_angles.clear();
-		being_lag_compensated = false;
-		lower_body_yaw_resolved = false;
-		lower_body_yaw = 0.f;
-		last_lower_body_yaw_last_update = 0.f;
-
-		restore_record.reset();
-
-		if (!records->empty())
-			records->clear();
-	}
-
-	c_base_entity* entity;
-	C_Tick_Record restore_record;
-	int tick_count;
-	vec3_t hitbox_position;
-	qangle_t eye_angles;
-	bool being_lag_compensated;
-	bool lower_body_yaw_resolved = false;
-	float lower_body_yaw_resolved_yaw;
-	float lower_body_yaw, last_lower_body_yaw_last_update;
-
-	std::deque<C_Tick_Record> records[LAG_COMPENSATION_TICKS];
-};
-
-class C_LagCompensation
-{
-public:
-	C_LagCompensation()
-	{
-	}
-
-	~C_LagCompensation()
-	{
-	}
-
-	enum round_gameflags
-	{
-		ROUND_STARTING = 0,
-		ROUND_IN_PROGRESS,
-		ROUND_ENDING,
+		vecOrigin = pPlayer->get_origin(), vecVelocity = pPlayer->get_velocity();
+		angAngles = pPlayer->get_eye_angles(), angAbsAngels = pPlayer->get_abs_angles();
+		iFlags = pPlayer->get_flags(), iEFlags = pPlayer->get_eflags(), iSimulationTime = pPlayer->get_sim_time(), iPlayerID = pPlayer->get_index();
+		flLby = pPlayer->get_lby();
+		bIsDormant = pPlayer->is_dormant(), bIsImmune = pPlayer->is_immune();
+		pAnimstate = pPlayer->get_anim_state();
+		this->pPlayer = pPlayer;
 	};
 
-	round_gameflags round_flags;
+	void Reset()
+	{
+		vecOrigin = vec3_t(0, 0, 0), vecVelocity = vec3_t(0, 0, 0), vecMins = vec3_t(0, 0, 0), vecMaxs = vec3_t(0, 0, 0);
+		angAngles = qangle_t(0, 0, 0), angAbsAngels = qangle_t(0, 0, 0);
+		iFlags = int32_t(0), iEFlags = int32_t(0), iSimulationTime = int32_t(0), iPlayerID = int32_t(0);
+		flLby = float_t(0.f), flDuckAmount = float_t(0.f);
+		bIsDormant = bool(false), bIsShooting = bool(false), bIsImmune = bool(false), bIsValid = bool(false);
+		pPlayer = nullptr;
+	};
 
-	void frame_net_update_end() const;
-	void paint_debug() const;
-	static bool should_lag_compensate(c_base_entity* entity);
-	static void set_interpolation_flags(c_base_entity* entity, int flag);
-	static float get_interpolation();
-	bool is_time_delta_too_large(C_Tick_Record wish_record) const;
-	void update_player_record_data(c_base_entity* entity) const;
-	static void fix_animation_data(c_base_entity* entity);
-	static void store_record_data(c_base_entity* entity, C_Tick_Record* record_data);
-	static void apply_record_data(c_base_entity* entity, C_Tick_Record* record_data);
-	static void simulate_movement(C_Simulation_Data* data);
-	void predict_player(c_base_entity* entity, C_Tick_Record* current_record, C_Tick_Record* next_record) const;
-	bool get_lowerbodyyaw_update_tick(c_base_entity* entity, C_Tick_Record* tick_record, int* record_index) const;
-	int start_lag_compensation(c_base_entity* entity, int wish_tick, C_Tick_Record* output_record = nullptr) const;
-	void start_position_adjustment() const;
-	void start_position_adjustment(c_base_entity* entity) const;
-	void finish_position_adjustment() const;
-	static void finish_position_adjustment(c_base_entity* entity);
-	static void reset();
 };
+
+extern std::deque<CLagRecord> pLagRecords;
+
+class CLagCompensation : public c_singleton<CLagCompensation>
+{
+public:
+	void Run(c_user_cmd* pCmd);
+
+	void UpdateIncomingSequences(i_net_channel* pNetChannel);
+	void ClearIncomingSequences();
+	void AddLatencyToNetChannel(i_net_channel* pNetChannel, float flLatency);
+	void store_record(c_cs_player* pEntity);
+	float_t lerp_time();
+	bool valid_tick(int iTick);
+private:
+	std::deque<SequenceObject_t> vecSequences = { };
+	int nRealIncomingSequence = 0;
+	int nLastIncomingSequence = 0;
+};
+
+#define lagcompensation CLagCompensation::instance()
