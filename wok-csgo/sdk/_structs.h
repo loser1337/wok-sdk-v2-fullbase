@@ -65,22 +65,24 @@ struct bone_accessor_t {
 
 class c_studio_hdr;
 
-struct anim_layer_t {
-	float			m_anim_time;
-	float			m_fade_out_time;
-	c_studio_hdr*	m_studio_hdr;
-	int				m_dispatched_src;
-	int				m_dispatched_dst;
-	int				m_order;
-	int				m_sequence;
-	float			m_prev_cycle;
-	float			m_weight;
-	float			m_weight_delta_rate;
-	float			m_playback_rate;
-	float			m_cycle;
-	c_base_entity*	m_owner;
-	int				m_invalidate_physics_bits;
-};
+class CAnimationLayer
+{
+public:
+	float			flAnimationTime;		//0x00
+	float			flFadeOut;				//0x04
+	void* pStudioHdr;				//0x08
+	int				nDispatchedSrc;			//0x0C
+	int				nDispatchedDst;			//0x10
+	int				iOrder;					//0x14
+	std::uintptr_t  nSequence;				//0x18
+	float			flPrevCycle;			//0x1C
+	float			flWeight;				//0x20
+	float			flWeightDeltaRate;		//0x24
+	float			flPlaybackRate;			//0x28
+	float			flCycle;				//0x2C
+	void* pOwner;					//0x30
+	int				nInvalidatePhysicsBits;	//0x34
+}; // Size: 0x38
 
 class c_base_combat_weapon;
 
