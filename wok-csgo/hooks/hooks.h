@@ -28,6 +28,12 @@ namespace hooks {
 			void __stdcall fn(e_client_frame_stage stage);
 		}
 
+		namespace hkSendDatagram {
+			constexpr auto index = 46u;
+			using T = int(__stdcall*)(i_net_channel*, int, c_bf_write*);
+			int __stdcall fn(i_net_channel* thisptr, int edx, c_bf_write* pDatagram);
+		}
+
 		namespace create_move {
 			constexpr auto index = 22u;
 			using T = void(__thiscall*)(void*, int, float, bool);
